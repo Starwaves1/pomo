@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+#
+# lab — a throwaway Linux box for testing pomo, that cleans itself up.
+#
+#   lab build          build the image (once, or after editing Containerfile)
+#   lab up [seconds]   start a sandbox that expires on its own (default 1h)
+#   lab run <cmd...>   run a command inside it
+#   lab sh             interactive shell inside it
+#   lab status         is one running, and for how much longer
+#   lab down           stop it now
+#
+# The container runs nothing but `sleep`, so it exits by itself when the time
+# is up, and --rm deletes it the moment it does. Nothing to remember to clean.
+#
+# It runs with no network, no capabilities, and your repo mounted read-only,
+# so whatever happens in there stays in there.
+
+set -euo pipefail
+
+export PATH=/opt/podman/bin:$PATH
+
+# Set PLATFORM=linux/amd64 to test under x86 emulation on an Apple Silicon Mac.
+# Slower, but it's the architecture most Linux desktops actually run.
+PLATFORM=${PLATFORM:-}
+SUFFIX=${PLATFORM:+-x86}
+PLATFORM_ARG=${PLATFORM:+--platform=$PLATFORM}
+
+IMAGE=pomo-lab$SUFFIX
+NAME=pomo-lab$SUFFIX
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+running() { podman container exists "$NAME" 2>/dev/null; }
+
+case "${1:-}" in
+  build)
+    podman build $PLATFORM_ARG -t "$IMAGE" "$REPO/dev"
+    ;;
+
+  up)
+    running && { echo "already up — 'lab down' first"; exit 1; }
+    ttl=${2:-3600}
+    podman run -d --rm --name "$NAME" $PLATFORM_ARG \
+      --network none \
+      --cap-drop ALL \
+      --security-opt no-new-privileges \
+      --memory 1g --pids-limit 256 \
+      -v "$REPO:/work:ro" \
+      "$IMAGE" sleep "$ttl" >/dev/null
+    echo "up for ${ttl}s — expires $(date -v "+${ttl}S" '+%-I:%M %p' 2>/dev/null || date -d "+${ttl} seconds" '+%-I:%M %p')"
+    ;;
+
+  run)
+    shift
+    podman exec "$NAME" bash -lc "$*"
+    ;;
+
+  sh)
+    podman exec -it "$NAME" bash
+    ;;
+
+  status)
+    if running; then
+      podman ps --filter "name=$NAME" \
+        --format 'up since {{.RunningFor}} — {{.Command}}'
+    else
+      echo "not running"
+    fi
+    ;;
+
+  down)
+    running && podman stop -t 0 "$NAME" >/dev/null && echo "down" || echo "not running"
+    ;;
+
+  *)
+    sed -n '3,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    ;;
+esac

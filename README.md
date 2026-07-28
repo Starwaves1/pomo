@@ -1,35 +1,50 @@
 # 🍅 pomo
 
-A Pomodoro timer for the terminal, with a braille progress bar.
+A minimal pomodoro timer in your terminal. This is an extremely straightforward
+little script which does what it says on the tin. Type `pomo` and it shows a
+pomodoro timer. At the end of a session it notifies you with a configurable sound.
 
-Five questions, each pre-filled with the session you ran last — so five Enters
-repeats it exactly. Then it takes over the window until you're done.
+No websites, no windows, barely any RAM or CPU, no network usage. Just works.
 
 ![pomo running](docs/running.png)
 
 ## Install
 
-macOS or Linux, Python 3.9+. No dependencies — one file, standard library only.
+macOS or Linux, Python 3.9+. No dependencies — one file.
+
+**macOS**
 
 ```sh
 git clone https://github.com/Starwaves1/pomo.git
-ln -s "$PWD/pomo/pomo" ~/bin/pomo    # anywhere on your PATH
+mkdir -p ~/bin && ln -s "$PWD/pomo/pomo" ~/bin/pomo
+echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc && exec zsh
 ```
+
+**Linux**
+
+```sh
+git clone https://github.com/Starwaves1/pomo.git
+mkdir -p ~/.local/bin && ln -s "$PWD/pomo/pomo" ~/.local/bin/pomo
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && exec bash
+```
+
+Each is three lines: clone it, link it onto your PATH, make sure that folder is
+on your PATH. The link means `git pull` updates the command you're running —
+there's nothing to reinstall.
 
 ## Use
 
+Start pomo:
+
 ```sh
-pomo        # set up this session, then start it
-pomo help   # keys, settings, where things live
+pomo
 ```
 
 ![pomo setup](docs/setup.png)
 
-Answer durations as `25`, `45m`, `90s` or `1h`. Anything unparseable keeps the
-default — there's no error to dismiss, you just try again.
+Answer durations as `25`, `45m`, `90s`, or `1h`.
 
-Answer **Sessions today** and the row fills in how long the whole run takes and
-the time you'll finish, breaks included. `0` means no goal: cycle until you quit.
+## Hotkeys
 
 | key | |
 |---|---|
@@ -38,15 +53,24 @@ the time you'll finish, breaks included. `0` means no goal: cycle until you quit
 | `r` | restart this interval |
 | `q` | quit (Ctrl+C works too) |
 
+Full help, including where settings live:
+
+```sh
+pomo help
+```
+
 ## Settings
 
-Everything lives in `~/.config/pomo/pomo.ini`, rewritten after every run so it
-always holds your last session. Setup covers the timings; edit the file for the
-rest:
+`~/.config/pomo/pomo.ini`, rewritten after every run so it always holds your
+last session. Setup covers the timings; edit the file for the rest.
+
+The default sound ships with your OS — **`Glass` on macOS**, **`complete` on
+Linux** — so it rings on the first run without you installing anything. Point
+`file` at your own audio instead whenever you like:
 
 ```ini
 [sound]
-# A bundled sound by name, or a path to any audio file of your own.
+# A sound that ships with your OS, or a path to any audio file of your own.
 # Leave empty for silence.
 file = ~/Documents/ping.wav
 volume = 0.5
@@ -56,19 +80,19 @@ width = 24
 notify = yes
 ```
 
-Bundled names that work out of the box:
+Other names that work out of the box:
 
 | | |
 |---|---|
 | macOS | `Glass` `Ping` `Submarine` `Hero` `Funk` `Sosumi` `Basso` |
 | Linux | `complete` `bell` `message` `alarm-clock-elapsed` |
 
-Or point `file` at anything you like — `~/Documents/ping.wav`, an mp3, an ogg.
+![notification](docs/notification-macos.png)
 
-## Portability
+## Notes
 
-The same install works on both platforms. The audio player and notifier are
-discovered at runtime rather than hardcoded:
+The same install works on both Linux and macOS. The audio player and notifier
+are discovered at runtime:
 
 | | macOS | Linux |
 |---|---|---|
@@ -78,12 +102,9 @@ discovered at runtime rather than hardcoded:
 The first one present wins. On a machine with none of them, pomo runs quiet
 instead of failing.
 
-## Notes
-
-- Uses the alternate screen buffer, like `vim` or `htop` — your scrollback is
-  untouched while it runs, and you get the window back exactly as you left it,
-  with one line saying what you got done.
-- Colours are 256-colour, which every modern terminal handles.
+Uses the alternate screen buffer, like `vim` or `htop` — your scrollback is
+untouched while it runs, and you get the window back exactly as you left it,
+with one line saying what you got done.
 
 ## License
 

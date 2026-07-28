@@ -1,0 +1,23 @@
+# A throwaway Debian box with exactly what pomo touches on Linux:
+# python, a couple of audio players, the notifier, and the freedesktop sound
+# theme it resolves bare sound names against.
+
+FROM debian:stable-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 \
+        pulseaudio-utils \
+        alsa-utils \
+        libnotify-bin \
+        sound-theme-freedesktop \
+    && rm -rf /var/lib/apt/lists/*
+
+# Nothing here needs root.
+RUN useradd -m -s /bin/bash lab
+USER lab
+
+WORKDIR /work
+ENV TERM=xterm-256color
+
+# The container's whole job is to expire. See dev/lab.
+CMD ["sleep", "3600"]
