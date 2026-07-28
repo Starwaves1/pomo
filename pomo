@@ -63,8 +63,9 @@ per_set = {per_set}
 sessions = {sessions}
 
 [sound]
-# A macOS system sound (Glass, Ping, Submarine, Hero, Funk, Sosumi, Basso...)
-# or a path to any audio file. Leave empty for silence.
+# A bundled sound by name — macOS has Glass, Ping, Submarine, Hero, Funk,
+# Sosumi, Basso; Linux desktops have complete, bell, message, alarm-clock-elapsed
+# — or a path to any audio file of your own. Leave empty for silence.
 file = {file}
 volume = {volume}
 
@@ -73,10 +74,13 @@ width = {width}
 notify = {notify}
 """
 
+# Glass exists on macOS, complete on freedesktop Linux — pick one that's there.
+DEFAULT_SOUND = "Glass" if sys.platform == "darwin" else "complete"
+
 DEFAULTS = {
     "focus": 1500, "short_break": 300, "long_break": 900,
     "per_set": 4, "sessions": 4,
-    "file": "Glass", "volume": "0.5", "width": 24, "notify": "yes",
+    "file": DEFAULT_SOUND, "volume": "0.5", "width": 24, "notify": "yes",
 }
 
 def load():
@@ -195,24 +199,60 @@ def setup(cfg):
     return cfg
 
 # ── Alarm ───────────────────────────────────────────────────────────────────
+#
+# macOS and Linux ship different players, notifiers and sound libraries, so
+# everything here is discovered at runtime with which(). The same install works
+# on both, and on a machine with none of them pomo simply runs quiet.
+
+SOUND_DIRS = ["/System/Library/Sounds",                  # macOS
+              "/usr/share/sounds/freedesktop/stereo"]    # most Linux desktops
+SOUND_EXTS = [".aiff", ".oga", ".wav", ".ogg", ".mp3"]
+
+# volume arrives as 0.0–1.0; each player wants it on its own scale
+PLAYERS = [
+    ("afplay", lambda p, v: ["afplay", "-v", f"{v}", p]),
+    ("paplay", lambda p, v: ["paplay", f"--volume={int(v * 65536)}", p]),
+    ("ffplay", lambda p, v: ["ffplay", "-nodisp", "-autoexit", "-loglevel",
+                             "quiet", "-volume", f"{int(v * 100)}", p]),
+    ("mpv",    lambda p, v: ["mpv", "--really-quiet", f"--volume={int(v * 100)}", p]),
+    ("aplay",  lambda p, v: ["aplay", "-q", p]),          # wav only, no volume
+]
 
 def sound_file(name):
-    """A system sound by bare name, a path, or None for silence."""
-    for candidate in (Path(f"/System/Library/Sounds/{name}.aiff"),
-                      Path(name).expanduser()):
-        if name and candidate.is_file():
-            return str(candidate)
+    """A bundled sound by bare name, a path of your own, or None for silence."""
+    if not name:
+        return None
+    if Path(name).expanduser().is_file():
+        return str(Path(name).expanduser())
+    for folder in SOUND_DIRS:
+        for ext in SOUND_EXTS:
+            if (candidate := Path(folder) / f"{name}{ext}").is_file():
+                return str(candidate)
+    return None
+
+def command(path, volume):
+    """The first player actually installed, ready to run."""
+    for name, build in PLAYERS:
+        if shutil.which(name):
+            return build(path, float(volume))
     return None
 
 def alarm(cfg, path, label):
     """Ring and notify without blocking the timer."""
-    if path:
-        threading.Thread(target=subprocess.run, daemon=True,
-                         args=(["afplay", "-v", str(cfg["volume"]), path],),
+    if path and (cmd := command(path, cfg["volume"])):
+        threading.Thread(target=subprocess.run, args=(cmd,), daemon=True,
                          kwargs={"capture_output": True}).start()
-    if str(cfg["notify"]).lower() in ("yes", "true", "1"):
-        subprocess.run(["osascript", "-e", f'display notification "{label} done"'
-                        ' with title "🍅 pomo"'], capture_output=True)
+
+    if str(cfg["notify"]).lower() not in ("yes", "true", "1"):
+        return
+    if shutil.which("osascript"):
+        note = ["osascript", "-e",
+                f'display notification "{label} done" with title "🍅 pomo"']
+    elif shutil.which("notify-send"):
+        note = ["notify-send", "🍅 pomo", f"{label} done"]
+    else:
+        return
+    subprocess.run(note, capture_output=True)
 
 # ── Screen ──────────────────────────────────────────────────────────────────
 
@@ -356,10 +396,15 @@ def show_help():
 
     Rewritten after every run, so it always holds your last session. Edit it
     for the things setup doesn't ask about — alarm sound, volume, bar width,
-    and whether to post a macOS notification.
+    and whether to post a desktop notification.
 
-    The sound is a system name ({c('Glass', MINT)}, {c('Ping', MINT)}, {c('Submarine', MINT)}…) or a path to
-    any audio file. Empty means silence. Playback uses {c('afplay', MINT)}.
+    The sound is a bundled name ({c('Glass', MINT)} on macOS, {c('complete', MINT)} on Linux…) or a
+    path of your own: {c('~/Documents/ping.wav', MINT)}. Empty means silence.
+
+  {BOLD}PORTABILITY{RESET}
+    One file, standard library only, works on macOS and Linux. The player and
+    notifier are found at runtime — {c('afplay', MINT)} or {c('paplay', MINT)}/{c('ffplay', MINT)}/{c('mpv', MINT)}/{c('aplay', MINT)},
+    {c('osascript', MINT)} or {c('notify-send', MINT)}. With none installed, pomo just runs quiet.
 """)
 
 # ── Main ────────────────────────────────────────────────────────────────────
