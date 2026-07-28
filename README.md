@@ -35,7 +35,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && exec bash
 Clone, symlink onto your PATH, make sure that folder is on your PATH. The link
 (or `git pull`) means updates need no reinstall.
 
-## Windows
+**Windows**
 
 **Not tested well.** It works in a Windows-for-ARM VM on my Mac. It does not
 support desktop notifications. Sound should work.
