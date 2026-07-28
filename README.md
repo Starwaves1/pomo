@@ -10,7 +10,9 @@ No websites, no windows, barely any RAM or CPU, no network usage. Just works.
 
 ## Install
 
-macOS or Linux, Python 3.9+. No dependencies — one file.
+macOS, Linux or Windows, Python 3.9+. No dependencies — one file. Clone it,
+put it on your PATH; there's no installer to trust and `git pull` updates the
+command you run.
 
 **macOS**
 
@@ -28,9 +30,32 @@ mkdir -p ~/.local/bin && ln -s "$PWD/pomo/pomo" ~/.local/bin/pomo
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && exec bash
 ```
 
-Each is three lines: clone it, link it onto your PATH, make sure that folder is
-on your PATH. The link means `git pull` updates the command you're running —
-there's nothing to reinstall.
+**Windows** (in Command Prompt, using [Git](https://git-scm.com/download/win) and
+[Python](https://www.python.org/downloads/windows/))
+
+```bat
+git clone https://github.com/Starwaves1/pomo.git %USERPROFILE%\pomo
+cd %USERPROFILE%\pomo
+py pomo
+```
+
+That last line runs it. To make `pomo` a command you can type from anywhere,
+create a small launcher and add its folder to PATH:
+
+```bat
+echo @py "%USERPROFILE%\pomo\pomo" %*>"%USERPROFILE%\pomo\pomo.cmd"
+setx PATH "%PATH%;%USERPROFILE%\pomo"
+```
+
+Open a new terminal, then `pomo`. Use **Windows Terminal**, not the classic
+console, so the full-screen timer renders. `py pomo` and `python pomo` are
+interchangeable — use whichever your install provides.
+
+---
+
+The macOS/Linux recipes are three lines: clone it, link it onto your PATH, make
+sure that folder is on your PATH. The link (or `git pull`) means updates need no
+reinstall.
 
 ## Use
 
