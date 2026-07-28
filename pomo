@@ -12,17 +12,24 @@ Enter five times repeats it exactly. Anything unparseable keeps the default.
 __version__ = "2.0.0"
 
 import configparser
-import select
+import os
 import shutil
 import subprocess
 import sys
-import termios
 import threading
 import time
-import tty
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
+
+WINDOWS = os.name == "nt"
+
+if WINDOWS:
+    import msvcrt
+else:
+    import select
+    import termios
+    import tty
 
 # ── Colors ──────────────────────────────────────────────────────────────────
 
@@ -44,6 +51,37 @@ RAILS = {CORAL: fg(95), MINT: fg(65), SKY: fg(60)}
 def c(text, color):
     return f"{color}{text}{RESET}"
 
+# ── Finding a sound ─────────────────────────────────────────────────────────
+#
+# Every desktop ships sounds, just in different places and formats. Looking
+# them up here — above the settings — lets the first-run default be a file we
+# have actually confirmed exists, so pomo rings on a fresh install everywhere.
+
+SOUND_DIRS = ["/System/Library/Sounds",                  # macOS
+              "/usr/share/sounds/freedesktop/stereo",    # most Linux desktops
+              "C:/Windows/Media"]                        # Windows
+SOUND_EXTS = [".wav", ".aiff", ".oga", ".ogg", ".mp3"]
+
+# Tried in order; the first one present becomes the default on a fresh install.
+CANDIDATES = {
+    "darwin": ["Glass", "Ping", "Submarine"],
+    "nt": ["Windows Notify System Generic", "chimes", "notify", "ding", "tada"],
+}.get("nt" if WINDOWS else sys.platform, ["complete", "bell", "message"])
+
+def sound_file(name):
+    """A bundled sound by bare name, a path of your own, or None for silence."""
+    if not name:
+        return None
+    if Path(name).expanduser().is_file():
+        return str(Path(name).expanduser())
+    for folder in SOUND_DIRS:
+        for ext in SOUND_EXTS:
+            if (candidate := Path(folder) / f"{name}{ext}").is_file():
+                return str(candidate)
+    return None
+
+DEFAULT_SOUND = next((n for n in CANDIDATES if sound_file(n)), "")
+
 # ── Settings ────────────────────────────────────────────────────────────────
 #
 # One file, rewritten from this template after every run — so it always holds
@@ -63,9 +101,11 @@ per_set = {per_set}
 sessions = {sessions}
 
 [sound]
-# A bundled sound by name — macOS has Glass, Ping, Submarine, Hero, Funk,
-# Sosumi, Basso; Linux desktops have complete, bell, message, alarm-clock-elapsed
+# A bundled sound by name — macOS has Glass, Ping, Submarine, Hero, Funk;
+# Linux has complete, bell, message; Windows has chimes, notify, ding, tada
 # — or a path to any audio file of your own. Leave empty for silence.
+# On Windows a .wav plays instantly but ignores volume; other formats honour
+# it, so if you want quieter, pick a quieter file.
 file = {file}
 volume = {volume}
 
@@ -200,13 +240,9 @@ def setup(cfg):
 
 # ── Alarm ───────────────────────────────────────────────────────────────────
 #
-# macOS and Linux ship different players, notifiers and sound libraries, so
-# everything here is discovered at runtime with which(). The same install works
-# on both, and on a machine with none of them pomo simply runs quiet.
-
-SOUND_DIRS = ["/System/Library/Sounds",                  # macOS
-              "/usr/share/sounds/freedesktop/stereo"]    # most Linux desktops
-SOUND_EXTS = [".aiff", ".oga", ".wav", ".ogg", ".mp3"]
+# Every desktop rings differently. Windows has a player built into Python;
+# macOS and Linux ship command-line ones, discovered at runtime with which().
+# On a machine with none of them, pomo simply runs quiet.
 
 # volume arrives as 0.0–1.0; each player wants it on its own scale
 PLAYERS = [
@@ -218,18 +254,6 @@ PLAYERS = [
     ("aplay",  lambda p, v: ["aplay", "-q", p]),          # wav only, no volume
 ]
 
-def sound_file(name):
-    """A bundled sound by bare name, a path of your own, or None for silence."""
-    if not name:
-        return None
-    if Path(name).expanduser().is_file():
-        return str(Path(name).expanduser())
-    for folder in SOUND_DIRS:
-        for ext in SOUND_EXTS:
-            if (candidate := Path(folder) / f"{name}{ext}").is_file():
-                return str(candidate)
-    return None
-
 def command(path, volume):
     """The first player actually installed, ready to run."""
     for name, build in PLAYERS:
@@ -237,22 +261,61 @@ def command(path, volume):
             return build(path, float(volume))
     return None
 
+def quietly(cmd):
+    """Run a command in the background, with no console window on Windows."""
+    threading.Thread(
+        target=subprocess.run, args=(cmd,), daemon=True,
+        kwargs={"capture_output": True,
+                "creationflags": subprocess.CREATE_NO_WINDOW if WINDOWS else 0},
+    ).start()
+
+def ring(path, volume):
+    """Play the alarm. Returns immediately either way."""
+    if WINDOWS:
+        # winsound is in the standard library and already asynchronous, so a
+        # .wav needs no player, no subprocess and no console flash. It has no
+        # volume control — that's why the default sound is a system .wav.
+        if path.lower().endswith(".wav"):
+            import winsound
+            winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+        else:
+            # mp3 and friends need a real decoder; PowerShell has one, and it
+            # honours volume. Slower to start, so wav stays the good path.
+            quietly(["powershell", "-NoProfile", "-Command",
+                     "Add-Type -AssemblyName PresentationCore;"
+                     "$p = New-Object System.Windows.Media.MediaPlayer;"
+                     f"$p.Open([uri]'{path}'); $p.Volume = {float(volume)};"
+                     "$p.Play(); Start-Sleep -Seconds 5"])
+    elif cmd := command(path, volume):
+        quietly(cmd)
+
+def notify(label):
+    """Post a desktop notification, if this machine has any way to."""
+    if WINDOWS:
+        quietly(["powershell", "-NoProfile", "-Command",
+                 "[Windows.UI.Notifications.ToastNotificationManager,"
+                 "Windows.UI.Notifications, ContentType=WindowsRuntime] > $null;"
+                 "$x = [Windows.UI.Notifications.ToastNotificationManager]::"
+                 "GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]"
+                 "::ToastText02);"
+                 "$t = $x.GetElementsByTagName('text');"
+                 "$t[0].AppendChild($x.CreateTextNode('pomo')) > $null;"
+                 f"$t[1].AppendChild($x.CreateTextNode('{label} done')) > $null;"
+                 "[Windows.UI.Notifications.ToastNotificationManager]::"
+                 "CreateToastNotifier('pomo').Show("
+                 "[Windows.UI.Notifications.ToastNotification]::new($x))"])
+    elif shutil.which("osascript"):
+        quietly(["osascript", "-e",
+                 f'display notification "{label} done" with title "🍅 pomo"'])
+    elif shutil.which("notify-send"):
+        quietly(["notify-send", "🍅 pomo", f"{label} done"])
+
 def alarm(cfg, path, label):
     """Ring and notify without blocking the timer."""
-    if path and (cmd := command(path, cfg["volume"])):
-        threading.Thread(target=subprocess.run, args=(cmd,), daemon=True,
-                         kwargs={"capture_output": True}).start()
-
-    if str(cfg["notify"]).lower() not in ("yes", "true", "1"):
-        return
-    if shutil.which("osascript"):
-        note = ["osascript", "-e",
-                f'display notification "{label} done" with title "🍅 pomo"']
-    elif shutil.which("notify-send"):
-        note = ["notify-send", "🍅 pomo", f"{label} done"]
-    else:
-        return
-    subprocess.run(note, capture_output=True)
+    if path:
+        ring(path, float(cfg["volume"]))
+    if str(cfg["notify"]).lower() in ("yes", "true", "1"):
+        notify(label)
 
 # ── Screen ──────────────────────────────────────────────────────────────────
 
@@ -289,12 +352,28 @@ def screen(cfg, current, history):
 
 # ── Timer ───────────────────────────────────────────────────────────────────
 
+def waiting(timeout):
+    """Windows: poll for a keypress. select() only handles sockets there."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if msvcrt.kbhit():
+            return msvcrt.getwch()
+        time.sleep(0.01)
+    return None
+
 @contextmanager
 def keyboard():
     """Single keypresses, no Enter. Yields a read(timeout) that paces the loop."""
+    sys.stdout.write(HIDE)
+    if WINDOWS:
+        try:                            # no terminal mode to save or restore
+            yield waiting
+        finally:
+            sys.stdout.write(SHOW)
+        return
+
     saved = termios.tcgetattr(sys.stdin)
     tty.setcbreak(sys.stdin.fileno())  # leaves Ctrl+C working
-    sys.stdout.write(HIDE)
     try:
         yield lambda t: (sys.stdin.read(1)
                          if select.select([sys.stdin], [], [], t)[0] else None)
@@ -398,18 +477,33 @@ def show_help():
     for the things setup doesn't ask about — alarm sound, volume, bar width,
     and whether to post a desktop notification.
 
-    The sound is a bundled name ({c('Glass', MINT)} on macOS, {c('complete', MINT)} on Linux…) or a
-    path of your own: {c('~/Documents/ping.wav', MINT)}. Empty means silence.
+    The sound is a bundled name ({c('Glass', MINT)} on macOS, {c('complete', MINT)} on Linux,
+    {c('chimes', MINT)} on Windows…) or a path of your own: {c('~/Documents/ping.wav', MINT)}.
+    Empty means silence.
 
   {BOLD}PORTABILITY{RESET}
-    One file, standard library only, works on macOS and Linux. The player and
-    notifier are found at runtime — {c('afplay', MINT)} or {c('paplay', MINT)}/{c('ffplay', MINT)}/{c('mpv', MINT)}/{c('aplay', MINT)},
-    {c('osascript', MINT)} or {c('notify-send', MINT)}. With none installed, pomo just runs quiet.
+    One file, standard library only, on macOS, Linux and Windows. The player
+    and notifier are found at runtime — {c('afplay', MINT)}, {c('paplay', MINT)}/{c('ffplay', MINT)}/{c('mpv', MINT)}/{c('aplay', MINT)},
+    or Windows' built-in {c('winsound', MINT)}. With none of them, pomo runs quiet.
 """)
 
 # ── Main ────────────────────────────────────────────────────────────────────
 
+def windows_console():
+    """Teach the Windows console the two things it doesn't assume.
+
+    Without ENABLE_VIRTUAL_TERMINAL_PROCESSING the escape codes print as
+    literal garbage; without UTF-8 the braille and the tomato raise
+    UnicodeEncodeError. Both are no-ops on a console that's already fine.
+    """
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+    kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
+    sys.stdout.reconfigure(encoding="utf-8")
+
 def main():
+    if WINDOWS:
+        windows_console()
     if len(sys.argv) > 1:
         return show_help()
     if not sys.stdin.isatty():
