@@ -1,0 +1,391 @@
+#!/usr/bin/env python3
+"""
+pomo — Pomodoro timer for the terminal, with a braille progress bar.
+
+  pomo        set up this session and start it
+  pomo help   what the keys do and where settings live
+
+Five questions, each pre-filled with the session you ran last, so pressing
+Enter five times repeats it exactly. Anything unparseable keeps the default.
+"""
+
+__version__ = "2.0.0"
+
+import configparser
+import select
+import shutil
+import subprocess
+import sys
+import termios
+import threading
+import time
+import tty
+from contextlib import contextmanager
+from datetime import datetime, timedelta
+from pathlib import Path
+
+# ── Colors ──────────────────────────────────────────────────────────────────
+
+RESET, BOLD, DIM = "\033[0m", "\033[1m", "\033[2m"
+HIDE, SHOW, CLEAR, UP = "\033[?25l", "\033[?25h", "\033[K", "\033[A"
+ALT, ALT_OFF = "\033[?1049h", "\033[?1049l"   # the alternate screen buffer
+HOME, ERASE_BELOW = "\033[H", "\033[J"
+
+def fg(n):
+    return f"\033[38;5;{n}m"
+
+CORAL, MINT, SKY = fg(210), fg(120), fg(117)
+GOLD, PINK, WHITE = fg(222), fg(218), fg(231)
+
+# Every bar colour has a matching rail — a muted version of the same hue — so
+# the unfilled part belongs to the bar instead of fading into grey.
+RAILS = {CORAL: fg(95), MINT: fg(65), SKY: fg(60)}
+
+def c(text, color):
+    return f"{color}{text}{RESET}"
+
+# ── Settings ────────────────────────────────────────────────────────────────
+#
+# One file, rewritten from this template after every run — so it always holds
+# your last session, and the comments survive being machine-written.
+
+PATH = Path.home() / ".config" / "pomo" / "pomo.ini"
+
+TEMPLATE = """\
+# pomo — rewritten after each run, so this is always your last session.
+# Durations are in seconds; the setup prompts are the easy way to change them.
+
+[session]
+focus = {focus}
+short_break = {short_break}
+long_break = {long_break}
+per_set = {per_set}
+sessions = {sessions}
+
+[sound]
+# A macOS system sound (Glass, Ping, Submarine, Hero, Funk, Sosumi, Basso...)
+# or a path to any audio file. Leave empty for silence.
+file = {file}
+volume = {volume}
+
+[display]
+width = {width}
+notify = {notify}
+"""
+
+DEFAULTS = {
+    "focus": 1500, "short_break": 300, "long_break": 900,
+    "per_set": 4, "sessions": 4,
+    "file": "Glass", "volume": "0.5", "width": 24, "notify": "yes",
+}
+
+def load():
+    """Read every section into one flat dict, digits as ints."""
+    cfg, parser = dict(DEFAULTS), configparser.ConfigParser()
+    try:
+        parser.read(PATH)
+        for section in parser.sections():
+            cfg.update(parser[section])
+    except configparser.Error:
+        pass  # a hand-mangled file shouldn't stop you working
+    return {k: int(v) if str(v).isdigit() else v for k, v in cfg.items()}
+
+def save(cfg):
+    PATH.parent.mkdir(parents=True, exist_ok=True)
+    PATH.write_text(TEMPLATE.format(**cfg))
+
+# ── Durations ───────────────────────────────────────────────────────────────
+
+UNITS = {"s": 1, "m": 60, "h": 3600}
+
+def seconds(text):
+    """'25' → 1500, '90s' → 90, '1h' → 3600. None if it isn't a duration."""
+    text = text.strip().lower()
+    unit = UNITS.get(text[-1:], 60)
+    number = text[:-1] if text[-1:] in UNITS else text
+    return int(float(number) * unit) if number.replace(".", "", 1).isdigit() else None
+
+def span(secs):
+    """1500 → '25m', 8100 → '2h 15m', 45 → '45s'."""
+    if secs < 60:
+        return f"{int(secs)}s"
+    h, m = divmod(round(secs / 60), 60)
+    return " ".join(p for p in (f"{h}h" if h else "", f"{m}m" if m else "") if p)
+
+def mmss(secs):
+    return f"{int(secs) // 60}:{int(secs) % 60:02d}"
+
+def oclock(when):
+    return when.strftime("%I:%M %p").lstrip("0")
+
+# ── Braille bar ─────────────────────────────────────────────────────────────
+#
+# A braille cell is 2 columns × 4 rows of dots, so each character holds two
+# horizontal half-steps — twice the resolution of a block bar the same width.
+# The fill is bold to make the dots glow; the ⣀ rail carries the same hue.
+
+def bar(progress, width, color):
+    full, half = divmod(round(min(progress, 1) * width * 2), 2)
+    return (c("⣿" * full + "⡇" * half, BOLD + color)
+            + c("⣀" * (width - full - half), RAILS.get(color, DIM)))
+
+def dots(done, per_set):
+    filled = done % per_set or (per_set if done else 0)
+    return c("●" * filled, BOLD + CORAL) + c("○" * (per_set - filled), RAILS[CORAL])
+
+def row(label, color, progress, right, done, cfg):
+    """Every line the timer draws, live or finished, has this shape."""
+    return (f"  {c(label.ljust(10), BOLD + color)}{bar(progress, cfg['width'], color)}"
+            f"  {right}  {dots(done, cfg['per_set'])}")
+
+# ── Setup ───────────────────────────────────────────────────────────────────
+
+def finishing(cfg):
+    """How long the whole goal takes, and the clock time it lands on.
+
+    Breaks only fall between sessions, so there are n-1 of them, every
+    per_set'th one long.
+    """
+    n = cfg["sessions"]
+    if not n:
+        return f"{c('no end', WHITE)}  {DIM}runs until you quit{RESET}"
+
+    longs = (n - 1) // cfg["per_set"]
+    total = (n * cfg["focus"] + longs * cfg["long_break"]
+             + (n - 1 - longs) * cfg["short_break"])
+    end = oclock(datetime.now() + timedelta(seconds=total))
+    return f"{c(span(total), WHITE)}  {DIM}·{RESET}  {c(end, WHITE)}"
+
+def shown(cfg, key):
+    if key == "sessions":
+        return str(cfg[key]) if cfg[key] else "∞"
+    return str(cfg[key]) if key == "per_set" else span(cfg[key])
+
+FIELDS = [
+    ("Focus", "focus", seconds),
+    ("Short break", "short_break", seconds),
+    ("Long break", "long_break", seconds),
+    ("Focus per set", "per_set", str.isdigit),
+    ("Sessions today", "sessions", str.isdigit),
+]
+
+def setup(cfg):
+    """Ask the five questions, redrawing each answer in place once it lands."""
+    print(f"\n  {c('🍅 pomo', BOLD + PINK)} {c('v' + __version__, DIM)}")
+    print(f"  {DIM}Enter keeps the default · Ctrl+C to cancel{RESET}\n")
+
+    for label, key, parse in FIELDS:
+        was = shown(cfg, key)
+        prompt = f"  {c(label.ljust(15), SKY)}{c(was.rjust(6), DIM)}  {c('▸', BOLD + PINK)} "
+        try:
+            answer = input(prompt).strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            sys.exit(0)
+
+        if parse is seconds:
+            cfg[key] = seconds(answer) or cfg[key]
+        elif answer.isdigit():
+            cfg[key] = int(answer)
+
+        note = f"   {finishing(cfg)}" if key == "sessions" else ""
+        print(f"{UP}\r  {c(label.ljust(15), SKY)}{c(was.rjust(6), DIM)}"
+              f"  {c('▸', BOLD + PINK)} {c(shown(cfg, key), BOLD + WHITE)}{note}{CLEAR}")
+
+    return cfg
+
+# ── Alarm ───────────────────────────────────────────────────────────────────
+
+def sound_file(name):
+    """A system sound by bare name, a path, or None for silence."""
+    for candidate in (Path(f"/System/Library/Sounds/{name}.aiff"),
+                      Path(name).expanduser()):
+        if name and candidate.is_file():
+            return str(candidate)
+    return None
+
+def alarm(cfg, path, label):
+    """Ring and notify without blocking the timer."""
+    if path:
+        threading.Thread(target=subprocess.run, daemon=True,
+                         args=(["afplay", "-v", str(cfg["volume"]), path],),
+                         kwargs={"capture_output": True}).start()
+    if str(cfg["notify"]).lower() in ("yes", "true", "1"):
+        subprocess.run(["osascript", "-e", f'display notification "{label} done"'
+                        ' with title "🍅 pomo"'], capture_output=True)
+
+# ── Screen ──────────────────────────────────────────────────────────────────
+
+@contextmanager
+def fullscreen():
+    """Take over the window, and hand it back untouched on the way out."""
+    sys.stdout.write(ALT)
+    try:
+        yield
+    finally:
+        sys.stdout.write(SHOW + ALT_OFF)
+        sys.stdout.flush()
+
+def paint(lines):
+    """Repaint from the top. No clear first — erasing per line avoids flicker."""
+    sys.stdout.write(HOME + "\n".join(l + CLEAR for l in lines) + ERASE_BELOW)
+    sys.stdout.flush()
+
+def screen(cfg, current, history):
+    """Title pinned at the top, the interval running now, then what's finished."""
+    goal = f"  {DIM}·{RESET}  goal {c(cfg['sessions'], BOLD + PINK)}" if cfg["sessions"] else ""
+    head = [
+        "",
+        f"  {c('🍅 pomo', BOLD + PINK)}  {c(span(cfg['focus']), BOLD + CORAL)} focus"
+        f"  {DIM}·{RESET}  {c(span(cfg['short_break']), BOLD + MINT)} break{goal}",
+        "",
+        current,
+        "",
+    ]
+    foot = ["", f"  {DIM}space pause · s skip · r restart · q quit{RESET}"]
+
+    room = shutil.get_terminal_size((80, 24)).lines - len(head) - len(foot) - 1
+    return head + history[-room:] + foot
+
+# ── Timer ───────────────────────────────────────────────────────────────────
+
+@contextmanager
+def keyboard():
+    """Single keypresses, no Enter. Yields a read(timeout) that paces the loop."""
+    saved = termios.tcgetattr(sys.stdin)
+    tty.setcbreak(sys.stdin.fileno())  # leaves Ctrl+C working
+    sys.stdout.write(HIDE)
+    try:
+        yield lambda t: (sys.stdin.read(1)
+                         if select.select([sys.stdin], [], [], t)[0] else None)
+    finally:
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, saved)
+        sys.stdout.write(SHOW)
+
+def countdown(label, total, color, done, cfg, read, history):
+    """Run one interval. Returns 'done', 'skip' or 'quit'."""
+    left, paused, tick = total, False, time.monotonic()
+    while left > 0:
+        now = time.monotonic()
+        left -= 0 if paused else now - tick
+        tick = now
+
+        text, hue = ("paused", GOLD) if paused else (label, color)
+        paint(screen(cfg, row(text, hue, 1 - left / total,
+                              c(mmss(max(left, 0)).rjust(5), BOLD + WHITE), done, cfg),
+                     history))
+
+        key = read(0.1)
+        if key == " ":
+            paused = not paused
+        elif key in ("s", "S"):
+            return "skip"
+        elif key in ("q", "Q"):
+            return "quit"
+        elif key in ("r", "R"):
+            left, tick = total, time.monotonic()
+    return "done"
+
+def intervals(cfg):
+    """focus, break, focus, break… with a long break closing each set."""
+    count = 0
+    while True:
+        yield "focus", cfg["focus"], CORAL, True
+        count += 1
+        if count % cfg["per_set"]:
+            yield "break", cfg["short_break"], MINT, False
+        else:
+            yield "long break", cfg["long_break"], SKY, False
+
+def run(cfg):
+    """The session. Finished intervals stack up under the one running now."""
+    path = sound_file(cfg["file"])
+    history, done, focused = [], 0, 0
+
+    with keyboard() as read:
+        for label, length, color, is_focus in intervals(cfg):
+            action = countdown(label, length, color, done, cfg, read, history)
+            if action == "quit":
+                break
+            if action == "skip":
+                continue
+
+            if is_focus:
+                done, focused = done + 1, focused + length
+            history.append(
+                row(label, color, 1, c(oclock(datetime.now()).rjust(5), DIM), done, cfg)
+                + f"  {c('✓', MINT)}")
+            alarm(cfg, path, label)
+
+            if is_focus and cfg["sessions"] and done >= cfg["sessions"]:
+                break
+
+    return done, focused
+
+# ── Help ────────────────────────────────────────────────────────────────────
+
+def show_help():
+    print(f"""
+  {c('🍅 pomo', BOLD + PINK)} {c('v' + __version__, DIM)} — Pomodoro timer with a braille progress bar
+
+  {BOLD}USAGE{RESET}
+    {c('pomo', MINT)}          set up this session, then start it
+    {c('pomo help', MINT)}     this page
+
+  {BOLD}SETUP{RESET}
+    Five questions, each pre-filled with the session you ran last — so five
+    Enters repeats it exactly. Answer durations as {c('25', MINT)}, {c('45m', MINT)}, {c('90s', MINT)} or {c('1h', MINT)};
+    anything unparseable keeps the default.
+
+    Answer {c('Sessions today', MINT)} and the row fills in how long the whole run
+    takes and the time you'll finish. {c('0', MINT)} means no goal — cycle until you quit.
+
+  {BOLD}SCREEN{RESET}
+    pomo takes over the window while it runs and hands it back exactly as it
+    was when you quit, leaving one line behind saying what you got done.
+    Finished intervals stack up under the one running now.
+
+  {BOLD}KEYS{RESET}
+    {c('space', MINT)}         pause / resume
+    {c('s', MINT)}             skip to the next interval
+    {c('r', MINT)}             restart this interval
+    {c('q', MINT)}             quit {DIM}(Ctrl+C works too){RESET}
+
+  {BOLD}SETTINGS{RESET}
+    {c(str(PATH), MINT)}
+
+    Rewritten after every run, so it always holds your last session. Edit it
+    for the things setup doesn't ask about — alarm sound, volume, bar width,
+    and whether to post a macOS notification.
+
+    The sound is a system name ({c('Glass', MINT)}, {c('Ping', MINT)}, {c('Submarine', MINT)}…) or a path to
+    any audio file. Empty means silence. Playback uses {c('afplay', MINT)}.
+""")
+
+# ── Main ────────────────────────────────────────────────────────────────────
+
+def main():
+    if len(sys.argv) > 1:
+        return show_help()
+    if not sys.stdin.isatty():
+        return print("  pomo needs a terminal — run it directly")
+
+    with fullscreen():
+        cfg = setup(load())
+        save(cfg)
+        try:
+            done, focused = run(cfg)
+        except KeyboardInterrupt:
+            done, focused = 0, 0
+
+    # Back on the shell's own screen — leave just the takeaway behind.
+    if done:
+        target = f" of {cfg['sessions']}" if cfg["sessions"] else ""
+        party = "  🎉" if cfg["sessions"] and done >= cfg["sessions"] else ""
+        print(f"\n  {c('✓', BOLD + MINT)} {c(done, BOLD + WHITE)}{target} focus sessions  {DIM}·{RESET}  "
+              f"{c(span(focused), BOLD + WHITE)} focused{party}\n")
+    else:
+        print(f"\n  {c('·', DIM)} Nothing finished\n")
+
+if __name__ == "__main__":
+    main()
