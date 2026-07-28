@@ -30,26 +30,27 @@ mkdir -p ~/.local/bin && ln -s "$PWD/pomo/pomo" ~/.local/bin/pomo
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && exec bash
 ```
 
-**Windows** (in Command Prompt, using [Git](https://git-scm.com/download/win) and
-[Python](https://www.python.org/downloads/windows/))
+**Windows** — needs [Git](https://git-scm.com/download/win) and
+[Python](https://www.python.org/downloads/windows/). Paste this whole block into
+**PowerShell** (what Windows Terminal opens by default):
 
-```bat
-git clone https://github.com/Starwaves1/pomo.git %USERPROFILE%\pomo
-cd %USERPROFILE%\pomo
-py pomo
+```powershell
+git clone https://github.com/Starwaves1/pomo.git "$env:USERPROFILE\pomo-app"
+$dir = "$env:USERPROFILE\pomo-app"
+Set-Content "$dir\pomo.cmd" "@py `"$dir\pomo`" %*" -Encoding ASCII
+[Environment]::SetEnvironmentVariable("Path",
+  [Environment]::GetEnvironmentVariable("Path","User") + ";$dir", "User")
+$env:Path += ";$dir"
+pomo help
 ```
 
-That last line runs it. To make `pomo` a command you can type from anywhere,
-create a small launcher and add its folder to PATH:
+It clones the repo, writes a small launcher, and puts it on your PATH — for this
+window and every future one. The last line should print this help page; then
+`pomo` works everywhere.
 
-```bat
-echo @py "%USERPROFILE%\pomo\pomo" %*>"%USERPROFILE%\pomo\pomo.cmd"
-setx PATH "%PATH%;%USERPROFILE%\pomo"
-```
-
-Open a new terminal, then `pomo`. Use **Windows Terminal**, not the classic
-console, so the full-screen timer renders. `py pomo` and `python pomo` are
-interchangeable — use whichever your install provides.
+Use **PowerShell**, not Command Prompt — the `$env:` syntax above is
+PowerShell's. And use **Windows Terminal**, not the old console, so the
+full-screen timer renders. `py` and `python` are interchangeable here.
 
 ---
 
