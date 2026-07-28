@@ -66,7 +66,8 @@ last session. Setup covers the timings; edit the file for the rest.
 
 The default sound ships with your OS — **`Glass` on macOS**, **`complete` on
 Linux** — so it rings on the first run without you installing anything. Point
-`file` at your own audio instead whenever you like:
+`file` at your own audio instead whenever you like, or **leave it empty for
+silence**:
 
 ```ini
 [sound]
@@ -86,6 +87,7 @@ Other names that work out of the box:
 |---|---|
 | macOS | `Glass` `Ping` `Submarine` `Hero` `Funk` `Sosumi` `Basso` |
 | Linux | `complete` `bell` `message` `alarm-clock-elapsed` |
+| nothing | `file =` on its own — no sound at all |
 
 ![notification](docs/notification-macos.png)
 
