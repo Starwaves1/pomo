@@ -10,13 +10,14 @@ No websites, no windows, barely any RAM or CPU, no network usage. Just works.
 
 ## Install
 
-macOS or Linux, Python 3.9+. No dependencies — one file. Clone it, put it on
-your PATH; there's no installer to trust and `git pull` updates the command you
-run. (Windows notes are at the very bottom.)
+Needs Python 3.9+ and git — no other dependencies, pomo itself is one file.
+Clone it, link it onto your PATH; there's no installer to trust, and `git pull`
+updates the command you run.
 
 **macOS**
 
 ```sh
+brew install python git
 git clone https://github.com/Starwaves1/pomo.git
 mkdir -p ~/bin && ln -s "$PWD/pomo/pomo" ~/bin/pomo
 echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc && exec zsh
@@ -25,13 +26,43 @@ echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc && exec zsh
 **Linux**
 
 ```sh
+sudo apt install python3 git        # or: dnf install / pacman -S
 git clone https://github.com/Starwaves1/pomo.git
 mkdir -p ~/.local/bin && ln -s "$PWD/pomo/pomo" ~/.local/bin/pomo
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && exec bash
 ```
 
-Each recipe is three lines: clone it, link it onto your PATH, make sure that
-folder is on your PATH. The link (or `git pull`) means updates need no reinstall.
+Clone, symlink onto your PATH, make sure that folder is on your PATH. The link
+(or `git pull`) means updates need no reinstall.
+
+## Windows
+
+**Not tested well.** It works in a Windows-for-ARM VM on my Mac. It does not
+support desktop notifications. Sound should work.
+
+macOS and Linux are great though.
+
+In PowerShell — **NOT Command Prompt** — install the two prerequisites:
+
+```powershell
+winget install Python.Python.3.13
+winget install Git.Git
+```
+
+Close that window, open a fresh one, then paste:
+
+```powershell
+git clone https://github.com/Starwaves1/pomo.git "$env:USERPROFILE\pomo-app"
+$dir = "$env:USERPROFILE\pomo-app"
+Set-Content "$dir\pomo.cmd" "@py `"$dir\pomo`" %*" -Encoding ASCII
+[Environment]::SetEnvironmentVariable("Path",
+  [Environment]::GetEnvironmentVariable("Path","User") + ";$dir", "User")
+$env:Path += ";$dir"
+pomo help
+```
+
+Then `pomo` works in any new terminal. Use **Windows Terminal** so the
+full-screen timer renders.
 
 ## Use
 
@@ -112,33 +143,3 @@ with one line saying what you got done.
 ## License
 
 MIT
-
----
-
-## Windows
-
-It runs, but this is the unloved corner: **desktop notifications don't work**
-(you still get the sound), and it's **not really tested** — a session or two on
-Windows-on-ARM, that's all. macOS and Linux are the supported paths.
-
-In **PowerShell** (not Command Prompt), install the two prerequisites:
-
-```powershell
-winget install Python.Python.3.13
-winget install Git.Git
-```
-
-Close that window, open a fresh one, then paste:
-
-```powershell
-git clone https://github.com/Starwaves1/pomo.git "$env:USERPROFILE\pomo-app"
-$dir = "$env:USERPROFILE\pomo-app"
-Set-Content "$dir\pomo.cmd" "@py `"$dir\pomo`" %*" -Encoding ASCII
-[Environment]::SetEnvironmentVariable("Path",
-  [Environment]::GetEnvironmentVariable("Path","User") + ";$dir", "User")
-$env:Path += ";$dir"
-pomo help
-```
-
-Then `pomo` works in any new terminal. Use **Windows Terminal** so the
-full-screen timer renders.
