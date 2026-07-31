@@ -1,7 +1,7 @@
 # 🍅 pomo
 
 A minimal pomodoro timer in your terminal. This is an extremely straightforward
-little script which does what it says on the tin. Type `pomo` and it shows a
+530 line python script which does what it says on the tin. Type `pomo` and it shows a
 pomodoro timer. At the end of a session it notifies you with a configurable sound.
 
 No websites, no windows, barely any RAM or CPU, no network usage. Just works.
@@ -143,3 +143,6 @@ with one line saying what you got done.
 ## License
 
 MIT
+
+## AI usage:
+100% coded with Claude Opus 5 in 1 hour at a cafe.
